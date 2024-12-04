@@ -1,104 +1,128 @@
 #include <stdio.h>
-#include <math.h>
 #include <stdlib.h>
-#include <time.h>
 #include <string.h>
-#include <stdbool.h>
+#include <omp.h>
+#include <time.h> // Certifica-se de incluir este cabeçalho
+
+#ifndef CLOCKS_PER_SEC
+#define CLOCKS_PER_SEC 1000000 // Define um valor padrão se necessário
+#endif
 
 int nNodes;
 short int* graph;
 
-void warshall();
 void read();
 void write(FILE *fl);
+void floyd_warshall();
 
-void write(FILE *fl){
-  int i, j;
+void read() {
+    char line[50];
+    char* token;
+    int size = 50;
+    int l, c;
 
-  for( i=0; i<nNodes; i++ ){
-    for( j=0; j<nNodes; j++ )
-      fprintf( fl, "%d ", graph[i * nNodes + j] );
+    // Leitura inicial para determinar o tamanho do grafo
+    fgets(line, size, stdin);
+    while (!feof(stdin)) {
+        token = strtok(line, " ");
+        if (*token == 'p') {
+            token = strtok(NULL, " "); // Skip 'sp'
 
-    fprintf( fl, "\n");
-  }
-}
+            token = strtok(NULL, " "); // No. of vertices
+            nNodes = atoi(token);
 
-void read (){
+            token = strtok(NULL, " "); // No. of directed edges
 
-  char line[50];
-  char* token;
-  int size = 50;
+            // Aloca a matriz do grafo
+            graph = (short int*)malloc(nNodes * nNodes * sizeof(short int));
+            if (graph == NULL) {
+                printf("Error in graph allocation: NULL!\n");
+                exit(EXIT_FAILURE);
+            }
 
-  int l;
-  int c;
+            // Inicialização da matriz com paralelismo
+            #pragma omp parallel for schedule(static)
+            for (int i = 0; i < nNodes; i++) {
+                for (int j = 0; j < nNodes; j++) {
+                    graph[i * nNodes + j] = (i == j) ? 0 : -1; // Inicializa valores
+                }
+            }
+        } else if (*token == 'a') {
+            token = strtok(NULL, " ");
+            l = atoi(token) - 1;
 
-  fgets(line,size,stdin);
+            token = strtok(NULL, " ");
+            c = atoi(token) - 1;
 
-  while(!feof(stdin)){
-
-    token = strtok(line," "); // split using space as divider
-    if(*token == 'p') {
-
-      token = strtok(NULL," "); // sp
-
-      token = strtok(NULL," "); // no. of vertices
-      nNodes = atoi(token);
-
-      token = strtok(NULL," "); // no. of directed edges
-
-      graph = (short int*) malloc(nNodes * nNodes * sizeof (short int));
-      if (graph == NULL) {
-        printf( "Error in graph allocation: NULL!\n");
-        exit( EXIT_FAILURE);
-      }
-
-      for(int i = 0; i < nNodes;i++){
-        for(int j = 0; j < nNodes;j++){
-          graph[i*nNodes+j] = 0;
+            token = strtok(NULL, " ");
+            graph[l * nNodes + c] = 1; // Define a aresta
         }
-      }
-    } else if(*token == 'a'){
-      token = strtok(NULL," ");
-      l = atoi(token)-1;
 
-      token = strtok(NULL," ");
-      c = atoi(token)-1;
-
-      token = strtok(NULL," ");
-      graph[l*nNodes+c] = 1;
-
+        fgets(line, size, stdin);
     }
-
-    fgets(line,size,stdin);
-  }
 }
 
 
-void warshall(){
-  for (int k = 0; k < nNodes; k++){
-    for (int i = 0; i < nNodes; i++){
-      for (int j = 0; j < nNodes; j++){
-        if(graph[i * nNodes + k] + graph[k * nNodes + j] < graph[i * nNodes + j])
-          graph[i * nNodes + j] = 1;
-
-      }
+void write(FILE *fl) {
+    for (int i = 0; i < nNodes; i++) {
+        for (int j = 0; j < nNodes; j++) {
+            fprintf(fl, "%d ", graph[i * nNodes + j]);
+        }
+        fprintf(fl, "\n");
     }
-  }
 }
 
-int main( int argc, char *argv[] ){
-  clock_t t;
-  t = clock();
-  printf ("Calculating...\n");
+void floyd_warshall() {
+    #pragma omp parallel
+    {
+        int* row_k = (int*)malloc(nNodes * sizeof(int));
+        int thread_id = omp_get_thread_num();
+        int n_threads = omp_get_num_threads();
 
-  read();
-  warshall();
-  write(stdout);
+        // Distribuição de linhas entre threads
+        int rows_per_thread = (nNodes + n_threads - 1) / n_threads;
+        int local_start = thread_id * rows_per_thread;
+        int local_end = (local_start + rows_per_thread > nNodes) ? nNodes : local_start + rows_per_thread;
 
-  free(graph);
-  t = clock() - t;
-  printf ("It took me %d clicks (%f seconds).\n",t,((float)t)/CLOCKS_PER_SEC);
+        for (int k = 0; k < nNodes; k++) {
+            // Mestre faz o broadcast da linha k
+            #pragma omp single
+            {
+                memcpy(row_k, &graph[k * nNodes], nNodes * sizeof(int));
+            }
 
-  return 0;
+            // Sincroniza todas as threads antes de continuar
+            #pragma omp barrier
+
+            // Processa as linhas atribuídas a cada thread
+            for (int i = local_start; i < local_end; i++) {
+                for (int j = 0; j < nNodes; j++) {
+                    if (graph[i * nNodes + k] != -1 && row_k[j] != -1) {
+                        int new_path = graph[i * nNodes + k] + row_k[j];
+                        if (graph[i * nNodes + j] == -1 || new_path < graph[i * nNodes + j]) {
+                            graph[i * nNodes + j] = new_path;
+                        }
+                    }
+                }
+            }
+        }
+
+        free(row_k);
+    }
 }
 
+int main(int argc, char* argv[]) {
+    clock_t t;
+    t = clock();
+    printf("Calculating...\n");
+
+    read();
+    floyd_warshall();
+    write(stdout);
+
+    free(graph);
+    t = clock() - t;
+    printf("It took me %ld clicks (%f seconds).\n", t, ((float)t) / CLOCKS_PER_SEC);
+
+    return 0;
+}
