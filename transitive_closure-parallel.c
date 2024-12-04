@@ -66,12 +66,13 @@ void read (){
 }
 
 void warshall(){
-  #pragma omp parallel for shared(graph)
-  for (int k = 0; k < nNodes; k++) {
+  int i,j,k;
+  #pragma omp parallel for shared(graph, nNodes) private(k, i, j)
+  for (k = 0; k < nNodes; k++) {
     #pragma omp parallel for
-    for (int i = 0; i < nNodes; i++) {
-      #pragma omp parallel for critical
-      for (int j = 0; j < nNodes; j++) {
+    for (i = 0; i < nNodes; i++) {
+      #pragma omp parallel for
+      for (j = 0; j < nNodes; j++) {
         if (graph[i * nNodes + k] + graph[k * nNodes + j] < graph[i * nNodes + j]) {
           graph[i * nNodes + j] = 1;
         }
